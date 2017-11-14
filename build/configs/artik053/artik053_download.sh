@@ -140,7 +140,10 @@ main()
 			exit' || finish_download 1
 			popd
 			;;
-
+		ROMFS|romfs)
+			echo "ROMFS :"
+			romfs
+			;;
 		*)
 			echo "${arg} is not suppported in artik053"
 			echo "Usage : make download [ ALL | ERASE_USERFS ]"
@@ -153,4 +156,3 @@ main()
 }
 
 main $*
-
