@@ -1,61 +1,166 @@
 var smartthings = require('smartthings');
-var Gpio = require('gpio');
-var gpio = new Gpio();
-
-var LED_ON = true,
-  LED_OFF = false;
+var PWM = require('pwm'),
+      pwm = new PWM();
 
 var SWITCH_URL = '/switch/main/0';
+var DIMMING_URL = '/switchLevel/main/0';
+var TEMPERATURE_URL = '/colorTemperature/main/0';
 
+var W = 0,
+      R = 1,
+      G = 2,
+      B = 3;
 
-var gpio41 = gpio.open({
-    pin: 41,
-    direction: gpio.DIRECTION.OUT,
-  }, function() {
-    gpio41.writeSync(LED_OFF);
-    console.log('complete GPIO');
+var powerStatus = ["on", "off"];
+var switchValue = false;
+
+var dimmingSetting = 50;
+var colorTemp = 50;
+var whiteLed = false;
+var led = [];
+
+function setRedLed() {
+  var cv = 0;
+  if (colorTemp <= 60) {
+    cv = (60 - colorTemp) * 1.65;
   }
-);
 
-var st = smartthings.create({});
+  led[R].setDutyCycleSync(dimmingSetting * cv / 10000);
+}
 
-var power_status = ["on", "off"];
-var g_switch_value = false;
+function setGreenLed() {
+  var cv = 0;
+  if (colorTemp >= 20 && colorTemp <= 50) {
+    cv = colorTemp * 1.2; 
+  } else if (colorTemp >= 70 && colorTemp <= 90) {
+    cv = (90 - colorTemp) * 2.5;
+  }
+ 
+  led[G].setDutyCycleSync(dimmingSetting * cv / 10000);  
+}
 
-st.on('getRequest', function(msg, req) {
-  var uri = msg.resourceUri;
+function setBlueLed() {
+  var cv = 0;
+  if (colorTemp >= 70) {
+    cv = (colorTemp - 70) * 3.3;
+  }
+  led[B].setDutyCycleSync(dimmingSetting * cv / 10000);    
+}
 
-  if (uri === SWITCH_URL) {
-    if (msg.hasPropertyKey('power')) {
-      req.set('power', g_switch_value ? power_status[0] : power_status[1]);
-      req.set('userInfo', {
-        company: "Samsung",
-        sdk: "ST Things SDK"
-      });
+function setWhiteLed() {
+  var cv = 0;
+  if (colorTemp >= 50 && colorTemp <= 70) {
+    cv = 60;
+    whiteLed = true;
+  } else if (colorTemp > 70 && colorTemp <= 80) {
+    cv = 30;
+    whiteLed = true;
+  } else {
+    if (!whiteLed) {
+      return;
     }
+    whiteLed = false;
   }
-});
+  led[W].setDutyCycleSync(dimmingSetting * cv / 10000);      
+}
 
-st.on('setRequest', function(msg, req) {
-  var uri = msg.resourceUri;
-  console.log('js: setrequest', uri);
-  if (uri === SWITCH_URL) {
 
-    var power = msg.req.getString('power');
-    if (power) {
-      if (power === 'off') {
-        g_switch_value = false;
-        gpio41.writeSync(LED_OFF);
-      } else {
-        g_switch_value = true;
-        gpio41.writeSync(LED_ON);
+function setLed() {
+  if (led.length === 0) {
+    return;
+  }
+
+  if (!switchValue) {
+    for (var i = 0; i < led.length; i++) {
+      led[i].setDutyCycleSync(0);
+    }
+  } else {
+    setRedLed();
+    setGreenLed();
+    setBlueLed();
+    setWhiteLed();
+  }
+}
+
+for (var i = 0; i < 4; i++) {
+  (function(i) {
+    led[i]  = pwm.open({
+      period:0.001,
+      dutyCycle: 0.2,
+      pin: i
+    }, function(err) {
+      if (err) {
+        return;
       }
+      console.log("[IOTJS] start pwm ", i);
+      led[i].setDutyCycleSync(0);
+      led[i].setEnableSync(1);
 
-      req.set('power', g_switch_value ? power_status[0] : power_status[1]);
-      st.notifyObservers(uri);
+      if (i === 3) {
+        startSmartThings();
+      }
+    });
+  })(i);
+}
+
+
+function startSmartThings() {
+  var st = smartthings.create({}, function() {
+    // Create and enable LED(RGBW)
+    console.log('[IOTJS] start smart things');
+  });
+  
+  st.on('getRequest', function(msg, req) {
+    var uri = msg.resourceUri;
+  
+    if (uri === SWITCH_URL) {
+      if (msg.hasPropertyKey('power')) {
+        req.set('power', switchValue ? powerStatus[0] : powerStatus[1]);
+        req.set('userInfo', {
+          company: "Samsung",
+          sdk: "ST Things SDK"
+        });
+      }
+    } else if (uri === DIMMING_URL) {
+      if (msg.hasPropertyKey('dimmingSetting')) {
+        req.set('dimmingSetting', dimmingSetting);
+      }
+    } else if (uri === TEMPERATURE_URL) {
+      if (msg.hasPropertyKey('ct')) {
+        req.set('ct', colorTemp);
+      }
     }
-  }
-});
+  });
+  
+  st.on('setRequest', function(msg, req) {
+    var uri = msg.resourceUri;
+    if (uri === SWITCH_URL) {
+  
+      var power = msg.req.getString('power');
+      if (power) {
+        if (power === 'off') {
+          switchValue = false;
+          setLed();
+        } else {
+          switchValue = true;
+          setLed();
+        }
+  
+        req.set('power', switchValue ? powerStatus[0] : powerStatus[1]);
+      }
+    } else if (uri === DIMMING_URL) {
+      dimmingSetting = msg.req.getInt('dimmingSetting');
+      req.set('dimmingSetting', dimmingSetting);
+      setLed();
+    } else if (uri === TEMPERATURE_URL) {
+      colorTemp = msg.req.getInt('ct');
+      req.set('ct', colorTemp);
+      setLed();
+    }
+    
+    st.notifyObservers(uri);
+  });
+}
 
 infinite();
 
